@@ -61,7 +61,7 @@ print(f'Total distintas:    {distintas}')
 print(f'Total duplicadas {total_bruto - distintas}')
 
 # ==============================================================================
-# Limpeza e padronização
+# 3 - Limpeza e padronização
 # ==============================================================================
 # Capturar total original ANTES de qualquer modificação
 total_antes = df.count()
@@ -208,3 +208,28 @@ for c in colunas_flag:
 
 print('Padronização concluída.')
 print(f'Total de registros após limpeza completa    {df.count()}')
+
+# ==============================================================================
+# 4 - Transformações de negócio
+# ==============================================================================
+# Calcular diferença em dias
+df = df.withColumn("dias_relacionamento",
+    datediff(current_date(), col("data_inicio_relacionamento_banco"))
+)
+
+# Classificar em faixas
+df = df.withColumn("faixa_tempo_relacionamento",
+    when(col("dias_relacionamento").isNull(), "NAO_INFORMADO")
+    .when(col("dias_relacionamento") <= 180, "1. Ate 6 meses")
+    .when(col("dias_relacionamento") <= 365, "2. Entre 6 meses e 1 ano")
+    .when(col("dias_relacionamento") <= 1095, "3. Entre 1 e 3 anos")
+    .when(col("dias_relacionamento") <= 1825, "4. Entre 3 e 5 anos")
+    .when(col("dias_relacionamento") <= 3650, "5. Entre 5 e 10 anos")
+    .otherwise("6. Mais de 10 anos")
+)
+
+# Verificar distribuição
+df.groupBy("faixa_tempo_relacionamento").count()    \
+    .orderBy("faixa_tempo_relacionamento").show(truncate=False)
+
+     
