@@ -232,4 +232,29 @@ df = df.withColumn("faixa_tempo_relacionamento",
 df.groupBy("faixa_tempo_relacionamento").count()    \
     .orderBy("faixa_tempo_relacionamento").show(truncate=False)
 
-     
+# Calcular score somando pontos por critério
+score = (
+    when(col("tem_token_mobile_habilitado") == "SIM", 3).otherwise(0) +
+    when(col("tem_token_embarcado_habilitado") == "SIM", 2).otherwise(0) +
+    when(col("flag_acesso_mobile") == "SIM", 2).otherwise(0) +
+    when(col("flag_acesso_web") == "SIM", 1).otherwise(0) +
+    when(col("flag_acesso_canal") == "SIM", 1).otherwise(0) +
+    when(
+        col("flag_acessou_canal") == "SIM" &
+        (datediff(current_date(), col("ref_anomes")) <= 90),
+        1
+    ).otherwise(0) +
+    when(col("qtd_total_sessoes") > 10, 1).otherwise(0)
+)
+
+df = df.withColumn("score_maturidade_digital", score)
+
+# Classificação baseada no score
+df = df.withColumn("classificacao_digital",
+    when(col("score_maturidade_digital") <= 2, "Baixo")
+    .when(col("score_maturidade_digital") <= 5, "Medio")
+    .when(col("score_maturidade_digital") <= 8, "Alto")
+    .otherwise("Avancado")
+)
+
+# Verificar distribuição
