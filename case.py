@@ -258,3 +258,179 @@ df = df.withColumn("classificacao_digital",
 )
 
 # Verificar distribuição
+df.groupBy("faixa_tempo_relacionamento").count()    \
+    .orderBy("faixa_tempo_relacionamento").show(truncate=False)
+
+# Calcular score somando pontos por critério
+score = (
+    when(col("tem_token_mobile_habilitado") == "SIM", 3).otherwise(0) +
+    when(col("tem_token_membarcado_habilitado") == "SIM", 2).otherwise(0) +
+    when(col("flag_acessou_mobile") == "SIM", 2).otherwise(0) +
+    when(col("flag_acessou_web") == "SIM", 1).otherwise(0) +
+    when(col("flag_acessou_canal") == "SIM", 1).otherwise(0) +
+    when(
+        (col("flag_acessou_canal") == "SIM") &
+        (datediff(current_date(), col("ref_anomes")) <= 90), 1).otherwise(0) +
+    when(col("qtd_total_sessoes") > 10, 1).otherwise(0)
+)
+
+df = df.withColumn("score_maturidade_digital", score)
+
+# Classificação baseada no score
+df = df.withColumn("classificacao_digitais",
+    when(col("score_maturidade_digital") <= 2, "Baixo")
+    .when(col("score_maturidade_digital") <= 5, "Medio")
+    .when(col("score_maturidade_digital") <= 8, "Alto")
+    .otherwise("Avancado")
+    )
+
+# Verificar distribuição
+df.groupBy("classificacao_digital").count().orderBy("classificacao_digital").show()
+df.groupBy("score_maturidade_digital").count().orderBy("score_maturidade_digital").show()
+
+# Condições de ALTO risco
+cond_bloqueado = (col("sit_operador") == "BLOQUEADO")
+cond_sem_token_com_poderes = (
+    (col("tem_token_mobile_habilitado") == "NAO") &
+    (col("tem_token_embarcado_habilitado") == "NAO") &
+    (col("flag_firmas_e_poderes") == "S")
+)
+
+cond_muitas_contas = (col("qtd_contas_associadas_ao_operador") > 10)
+
+alto = cond_bloqueado | cond_sem_token_com_poderes | cond_muitas_contas
+
+# Condições de MÉDIO risco
+cond_token_unico = (
+    col("tem_token_mobile_habilitado") != col("tem_token_embarcado_habilitado")
+)
+
+cond_sem_acesso_90dias = (
+    (col("flag_acessou_canal") == "NAO") |
+    (datediff(current_date(), col("ref_anomes")) >= 90)
+)
+
+medio = cond_token_unico | cond_sem_acesso_90dias
+
+# Classificar - ordem: ALTO > MÉDIO > BAIXO
+df = df.withColumn("risco_operador",
+    when(alto, "ALTO")
+    .when(medio, "MEDIO")
+    .otherwise("BAIXO")
+)
+
+# Verificar distribuição
+df.groupBy("risco_operador").count().orderBy("risco_operador").show()
+
+df = df.withColumn("concentracao_operadores",
+    when(col("qtd_operadores_associados_ao_cnpj") == 1, "Operador Unico")
+    .when(col("qtd_operadores_associados_ao_cnpj") <= 3, "Baixa Concentracao")
+    .when(col("qtd_operadores_associados_ao_cnpj") <= 10, "Media Concentracao")
+    .when(col("qtd_operadores_associados_ao_cnpj") > 10, "Alta Concentracao")
+    .otherwise("NAO_INFORMADO")
+)
+
+df = df.withColumn("flag_operador_multicontas",
+    when(col("qtd_contas_associadas_ao_operador") > 1, "SIM")
+    .otherwise("NAO")
+)
+
+# Verificar distribuição
+df.groupBy("concetracao_operadores").count().orderBy("concentracao_operadores").show(truncate=False)
+df.groupBy("flag_operador_multicontas").count().show()
+
+# ==============================================================================
+# 5 - Métricas de observabilidade
+# ==============================================================================
+# Dataframe de controle - resumo geral do pipeline
+metricas = spark.createDataFrame([
+    Row(metrica="registros_original", valor=str(total_antes)),
+    Row(metrica="duplicatas_removidas", valor=str(duplicatas_removidas)),
+    Row(metrica="registros_final", valor=str(total_depois)),
+    Row(metrica="total_nulos_antes", valor=str(total_nulos_antes)),
+    Row(metrica="total_nulos_corrigidos", valor=str(total_nulos_antes - total_nulos_depois)),
+    Row(metrica="total_nulos_restantes", valor=str(total_nulos_depois)),
+    Row(metrica="percentual_duplicatas", valor=f"{(duplicatas_removidas / total_antes) * 100:.2f}%"),
+    Row(metrica="percentual_nulos_corrigidos",
+        valor=f"{((total_nulos_antes - total_nulos_depois) / max(total_nulos_antes, 1)) * 100:.2f}%"),
+])
+
+print("=" * 60)
+print("MÉTRICAS DE OBSERVABILIDADE - RESUMO DO PIPELINE")
+print("=" * 60)
+metricas.show(truncate=False)
+
+# Detalhe de nulos por coluna (antes x depois)
+linhas_nulos = []
+for c in nulos_antes:
+    antes = nulos_antes[c]
+    depois = nulos_depois.get(c, 0)
+    if antes > 0: # Mostrar apenas nulos
+        linhas_nulos.append(Row(
+            coluna=c,
+            nulos_antes=antes,
+            nulos_depois=depois,
+            corrigidos=antes - depois
+        ))
+
+if linhas_nulos:
+    print("\nDetalhe de nulos por coluna:")
+    df_nulos = spark.createDataFrame(linhas_nulos)
+    df_nulos.orderBy("nulos_antes", ascending=False).show(truncate=False)
+
+# Distribuição das colunas transformadas
+print("=== faixa_tempo_relacionamento ===")
+df.groupBy("faixa_tempo_relacionamento").count().orderBy("faixa_tempo_relacionamento").show(truncate=False)
+
+print("=== classificacao_digital ===")
+df.groupBy("classificacao_digital").count().orderBy("classificacao_digital").show(truncate=False)
+
+print("=== score_maturidade_digital ===")
+df.groupBy("score_maturidade_digital").count().orderBy("score_maturidade_digital").show()
+
+print("=== risco_operador ===")
+df.groupBy("risco_operador").count().orderBy("risco_operador").show()
+
+print("=== concentracao_operadores ===")
+df.groupBy("concentracao_operadores").count().orderBy("concentracao_operadores").show(truncate=False)
+
+print("=== flag_operador_multicontas ===")
+df.groupBy("flag_operador_multicontas").count().show()
+
+# ==============================================================================
+# 6 - Salvamento particionado
+# ==============================================================================
+# Verificar shema final de salvar
+df.printSchema()
+print(f"\nTotal de registros a salvar: {df.count()}")
+
+# # --- Opção 1: Salvamento via Spark (requer winutils.exe no Windows) ---
+# df.write  \
+#     .mode("overwrite")  \
+#     .partitionBy("ref_anomes")  \
+#     .parquet("output/super_iam_refinado")
+# print("Salvo com sucesso via Spark!")
+
+# # --- Opção 2: Salvamento via pyarrow (não requer winutils.exe) ---
+# # Necessário: pip install pandas pyarrow
+# # import pyarrow as pa
+# # import pyarrow.parquet as pq
+
+# pdf = df.toPandas()
+# pdf["red_anomes"] = pdf["ref_anomes"].astype(str)
+
+# tabela = pa.Table.from_pandas(pdf)
+# pq.write_to_dataset(
+#     tabela,
+#     root_path="output/super_iam_refinada",
+#     partition_cols=["ref_anomes"]
+# )
+
+# print("Salvo com sucesso via pyarrow!")
+# print("Estrutura: output/super_iam_refinada/ref_anomes=YYYY-MM-DD/")
+
+# # Verificação: Ler o Parquet salvo de volta
+# df_salvo = spark.read.parquet("output/super_iam_refinada")
+# print(f"Registros salvos: {df_salvo.count()}")
+# df_salvo.printSchema()
+# df_salvo.show(5, truncate=False)
